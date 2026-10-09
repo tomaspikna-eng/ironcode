@@ -24,6 +24,16 @@ $host=getenv('IRONCODE_DB_HOST')?:'';
 $db=getenv('IRONCODE_DB_NAME')?:'';
 $user=getenv('IRONCODE_DB_USER')?:'';
 $pass=getenv('IRONCODE_DB_PASS');
+$privateConfig=dirname(__DIR__).'/ironcode-private.php';
+if (is_file($privateConfig)) {
+ $cfg=require $privateConfig;
+ if (is_array($cfg)) {
+  $host=(string)($cfg['db_host']??$host);
+  $db=(string)($cfg['db_name']??$db);
+  $user=(string)($cfg['db_user']??$user);
+  $pass=(string)($cfg['db_pass']??$pass);
+ }
+}
 if (!$host||!$db||!$user||$pass===false) {error_log('IronCode audit: database not configured');finish(503,'Služba sa nastavuje','Formulár momentálne nie je dostupný. Kontaktujte nás e-mailom.');}
 try {
  $pdo=new PDO('mysql:host='.$host.';dbname='.$db.';charset=utf8mb4',$user,$pass,[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_DEFAULT_FETCH_MODE=>PDO::FETCH_ASSOC,PDO::ATTR_EMULATE_PREPARES=>false]);
