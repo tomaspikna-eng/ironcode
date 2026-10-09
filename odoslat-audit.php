@@ -18,34 +18,40 @@ $phone=trim((string)($_POST['phone']??''));
 $len=static function(string $s): int {return function_exists('mb_strlen')?mb_strlen($s,'UTF-8'):count(preg_split('//u',$s,-1,PREG_SPLIT_NO_EMPTY)?:[]);};
 if ($len($who)<2||$len($who)>160||$len($what)<10||$len($what)>2500||$len($phone)<6||$len($phone)>32||!filter_var($email,FILTER_VALIDATE_EMAIL)||$len($email)>254||($_POST['privacy_ack']??'')!=='1') finish(422,'Neúplné údaje','Skontrolujte povinné polia a maximálnu dĺžku textu.');
 if (preg_match('/[\r\n]/',$email.$phone.$who)||preg_match('/[^+0-9 ()\-]/u',$phone)) finish(422,'Neplatné údaje','Skontrolujte e-mail a telefón.');
-// Set credentials as Hostinger environment variables or provision a private config outside public_html.
-// Do not commit secrets to GitHub.
-$host=getenv('IRONCODE_DB_HOST')?:'';
-$db=getenv('IRONCODE_DB_NAME')?:'';
-$user=getenv('IRONCODE_DB_USER')?:'';
-$pass=getenv('IRONCODE_DB_PASS');
+// Configure the secret key ONLY on the server, never in GitHub or browser-side JavaScript.
+$url='https://avjmuzrbkpchpwmpqqfa.supabase.co';
+$key=getenv('IRONCODE_SUPABASE_SECRET_KEY')?:'';
 $privateConfig=dirname(__DIR__).'/ironcode-private.php';
 if (is_file($privateConfig)) {
  $cfg=require $privateConfig;
- if (is_array($cfg)) {
-  $host=(string)($cfg['db_host']??$host);
-  $db=(string)($cfg['db_name']??$db);
-  $user=(string)($cfg['db_user']??$user);
-  $pass=(string)($cfg['db_pass']??$pass);
- }
+ if (is_array($cfg)) $key=(string)($cfg['supabase_secret_key']??$key);
 }
-if (!$host||!$db||!$user||$pass===false) {error_log('IronCode audit: database not configured');finish(503,'Služba sa nastavuje','Formulár momentálne nie je dostupný. Kontaktujte nás e-mailom.');}
+if (!$key || !function_exists('curl_init')) {
+ error_log('IronCode: Supabase server integration not configured');
+ finish(503,'Služba sa nastavuje','Formulár momentálne nie je dostupný. Kontaktujte nás e-mailom na info@ironcode.site.');
+}
+function supabaseRequest(string $url,string $key,string $method,array $data): array {
+ $curl=curl_init($url);
+ curl_setopt_array($curl,[CURLOPT_CUSTOMREQUEST=>$method,CURLOPT_POSTFIELDS=>json_encode($data,JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR),CURLOPT_HTTPHEADER=>['apikey: '.$key,'Authorization: Bearer '.$key,'Content-Type: application/json','Prefer: return=representation'],CURLOPT_RETURNTRANSFER=>true,CURLOPT_TIMEOUT=>12,CURLOPT_CONNECTTIMEOUT=>5]);
+ $response=curl_exec($curl);
+ $status=(int)curl_getinfo($curl,CURLINFO_HTTP_CODE);
+ curl_close($curl);
+ if ($response===false || $status<200 || $status>=300) throw new RuntimeException('Supabase request failed: HTTP '.$status);
+ return json_decode((string)$response,true,512,JSON_THROW_ON_ERROR);
+}
 try {
- $pdo=new PDO('mysql:host='.$host.';dbname='.$db.';charset=utf8mb4',$user,$pass,[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION,PDO::ATTR_DEFAULT_FETCH_MODE=>PDO::FETCH_ASSOC,PDO::ATTR_EMULATE_PREPARES=>false]);
- $stmt=$pdo->prepare('INSERT INTO audit_requests (requester, description, email, phone, notification_status) VALUES (:who,:what,:email,:phone,\'pending\')');
- $stmt->execute([':who'=>$who,':what'=>$what,':email'=>$email,':phone'=>$phone]);
- $id=(int)$pdo->lastInsertId();
-} catch (Throwable $e) {error_log('IronCode audit save failed: '.$e->getMessage());finish(503,'Nepodarilo sa odoslať','Skúste to neskôr alebo nám napíšte e-mail.');}
+ $records=supabaseRequest($url.'/rest/v1/audit_requests',$key,'POST',['requester'=>$who,'description'=>$what,'email'=>$email,'phone'=>$phone,'notification_status'=>'pending']);
+ $id=(int)($records[0]['id']??0);
+ if ($id<=0) throw new RuntimeException('Missing request ID');
+} catch (Throwable $e) {
+ error_log('IronCode audit insert: '.$e->getMessage());
+ finish(503,'Nepodarilo sa odoslať','Skúste to neskôr alebo nám napíšte na info@ironcode.site.');
+}
 $recipient='info@ironcode.site';
 $subject='=?UTF-8?B?'.base64_encode('Objednávka').'?=';
 $body="Nová požiadavka na audit #$id\n\nKTO: $who\nEMAIL: $email\nMOBIL: $phone\n\nČO:\n$what\n";
 $headers=['From: IronCode <no-reply@ironcode.site>','Content-Type: text/plain; charset=UTF-8','MIME-Version: 1.0'];
 $sent=@mail($recipient,$subject,$body,implode("\r\n",$headers));
-try {$pdo->prepare('UPDATE audit_requests SET notification_status = ? WHERE id = ?')->execute([$sent?'sent':'failed',$id]);}catch(Throwable $e){error_log('IronCode notification status failed: '.$e->getMessage());}
+try {supabaseRequest($url.'/rest/v1/audit_requests?id=eq.'.$id,$key,'PATCH',['notification_status'=>$sent?'sent':'failed']);} catch (Throwable $e) {error_log('IronCode notification status failed: '.$e->getMessage());}
 if (!$sent) error_log('IronCode audit notification failed for request #'.$id);
 finish(200,'Požiadavka bola uložená','Ďakujeme. Vaše zadanie evidujeme a budeme vás kontaktovať.');
